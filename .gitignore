@@ -1,0 +1,37 @@
+# --- DATA FILES ---
+# Ignore raw data to keep repo size small, but keep the folder
+data/raw/*
+!data/raw/.gitkeep
+
+# Ignore generated cloud aggregated data
+cloud_layer/*.csv
+
+# --- MODEL ARTIFACTS ---
+# We generally ignore large binary models, but for this project, 
+# you might want to keep them so the professor can run it instantly.
+# If you want to ignore them, uncomment the next line:
+# edge_node/*.pkl
+
+# --- PYTHON & ENVIRONMENT ---
+# Ignore the virtual environment (This is critical)
+.venv/
+env/
+venv/
+ENV/
+
+# Ignore Python cache and bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- IDE & SYSTEM ---
+# VS Code settings
+.vscode/
+.history/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# macOS system files
+.DS_Store
