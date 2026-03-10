@@ -36,21 +36,13 @@ class BridgeEdgeNode:
         logger.info(f"Model loaded. Ready to monitor {len(self.feature_names)} features.")
 
     def _preprocess_tick(self, raw_dict: dict) -> dict:
-        """
-        EDGE-LEVEL DATA IMPUTATION:
-        Cleans corrupt packets and handles missing sensor data on the fly.
-        """
+        """EDGE-LEVEL DATA IMPUTATION: Cleans corrupt packets on the fly."""
         cleaned = {}
         for key, val in raw_dict.items():
-            # If the sensor dropped the packet (NaN or None)
             if pd.isna(val) or val is None or val == '':
-                # Zero-Order Hold: Reuse the last known good value from the buffer
                 if len(self.data_buffer) > 0:
                     cleaned[key] = self.data_buffer[-1].get(key, 0.0)
-                    # We log it softly so we know the cleaning engine is working
-                    logger.debug(f"Corrupt packet detected for {key}. Imputing last known value.")
                 else:
-                    # Absolute fallback
                     cleaned[key] = 9.81 if 'Accel_Z' in key else 0.0
             else:
                 cleaned[key] = float(val)
@@ -74,7 +66,6 @@ class BridgeEdgeNode:
         return latest_data[self.feature_names]
 
     def process_sensor_tick(self, raw_data_dict: dict):
-        # 1. Clean the data FIRST before doing any math
         clean_dict = self._preprocess_tick(raw_data_dict)
         self.data_buffer.append(clean_dict)
         
@@ -95,24 +86,20 @@ class BridgeEdgeNode:
                 prediction = self.model.predict(live_features)[0]
                 
                 if prediction > 0:
-                    self.handle_actuation(prediction)
+                    logger.warning(f"ACTUATION TRIGGERED: Micro-fracture detected! Closing bridge traffic barrier!")
+                    self.send_telemetry(f"CRITICAL (State {int(prediction)}) 🚨", int(prediction))
             else:
                 self.is_awake = False
                 return
 
-    def handle_actuation(self, damage_state: int):
-        status = f"CRITICAL (State {damage_state}) 🚨"
-        
+    def send_telemetry(self, status: str, damage_state: int):
+        """Transmits state to Fog Node via UDP."""
         payload = {
             "sensor_id": "Pillar_A_01",
             "status": status,
-            "damage_index": int(damage_state),
+            "damage_index": damage_state,
             "timestamp": time.time()
         }
-        
-        logger.warning(f"ACTUATION TRIGGERED: Micro-fracture detected! Closing bridge traffic barrier!")
-        logger.info(f"Transmitting emergency payload to Fog Node: {json.dumps(payload)}")
-        
         try:
             udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             udp_sock.sendto(json.dumps(payload).encode('utf-8'), ('127.0.0.1', 5005))
@@ -137,8 +124,6 @@ if __name__ == "__main__":
     
     try:
         df_full = pd.read_csv(DATA_PATH)
-        
-        # Clean headers
         rename_map = {
             'Temp_C': 'Temp_C', 'Temp (°C)': 'Temp_C', 'Temp (\u00c2\u00b0C)': 'Temp_C',
             'Strain (\u03bc\u03b5)': 'Strain_ue', 'Strain (\u00ce\u00bc\u00ce\u00b5)': 'Strain_ue',
@@ -148,19 +133,17 @@ if __name__ == "__main__":
         df_full = df_full.rename(columns=rename_map)
 
         # --- CREATE A BULLETPROOF DEMO SCENARIO ---
-        df_demo_start = df_full.head(45).copy()
+        # Explicitly grab Safe data, then explicitly grab Critical Data
+        df_safe_start = df_full[df_full['Target'] == 0].head(20)
+        df_crit = df_full[df_full['Target'] > 0].head(20)
         
-        # Force the system back to baseline sleep to get the perfect cinematic ending
         safe_data = {
-            'Accel_X': [0.01] * 40,
-            'Accel_Y': [0.01] * 40,
-            'Accel_Z': [9.81] * 40, # Standard gravity, no variance = Instant Sleep
-            'Strain_ue': [50.0] * 40,
-            'Temp_C': [25.0] * 40
+            'Accel_X': [0.01] * 40, 'Accel_Y': [0.01] * 40, 'Accel_Z': [9.81] * 40,
+            'Strain_ue': [50.0] * 40, 'Temp_C': [25.0] * 40
         }
         df_safe_end = pd.DataFrame(safe_data)
         
-        df_demo = pd.concat([df_demo_start, df_safe_end]).reset_index(drop=True)
+        df_demo = pd.concat([df_safe_start, df_crit, df_safe_end]).reset_index(drop=True)
         df_demo = df_demo.drop(columns=['Timestamp', 'Target'], errors='ignore')
         
         print(f"\n--- STARTING LIVE STREAM (Scenario: Heavy truck crossing) ---")
@@ -179,8 +162,10 @@ if __name__ == "__main__":
                 logger.info("✅ ⚙️ ASR COMMAND: Threat passed. Cooldown complete. Throttling sensor DOWN to 10Hz Power-Saving Mode.")
                 current_sampling_rate = "LOW (10Hz)"
             
-            if current_sampling_rate == "LOW (10Hz)" and index % 10 == 0:
-                logger.info("🟢 System Idle: Monitoring Bridge Baseline (10Hz)")
+            # Send a heartbeat every 5 ticks while idling so Fog Node catches it quickly
+            if current_sampling_rate == "LOW (10Hz)" and index % 5 == 0:
+                logger.info("🟢 System Idle: Monitoring Bridge Baseline (10Hz) - Transmitting Heartbeat")
+                edge_node.send_telemetry("SAFE 🟢", 0)
             
             sleep_time = 0.05 if current_sampling_rate == "HIGH (100Hz)" else 0.2
             time.sleep(sleep_time) 
